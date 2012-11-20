@@ -29,7 +29,7 @@ struct data *train_data, *test_data;
 int train_inst, test_inst;
 struct tree_node *dec_tree;
 int curr_attr;
-int match,mismatch;
+double TP,TN,FP,FN;
 struct data *curr_data;
 
 char *unique_values;
@@ -573,12 +573,22 @@ int traverse(void *data,
 	struct node *node = (struct node*)data;
 
 	if (num == 0) {
+		curr_data->calc_label = node->label;
 		printf("actual label:%d, calc_label:%d\n",curr_data->actual_label,
-		       node->label);
-		if (curr_data->actual_label == node->label)
-			match++;
-		else
-			mismatch++;
+		       curr_data->calc_label);
+		if (curr_data->actual_label == curr_data->calc_label) {
+			if (curr_data->actual_label == 1) {
+				TP++;
+			} else {
+				TN++;
+			}
+		} else {
+			if (curr_data->calc_label == 1) {
+				FP++;
+			} else {
+				FN++;
+			}
+		}
 		return -1;
 	}
 	for (i=0;i<num;i++) {
@@ -596,13 +606,33 @@ void calculate_label(struct data *data,
 		     int inst)
 {
 	int i;
+	double accuracy, error, sensitivity, specificity, precision, f1score, fbeta0_5, fbeta2;
+	double P,N;
 
 	for (i=0;i<inst;i++) {
 		curr_data = data+i;
 		traverse_path(dec_tree,
 			      traverse);
 	}
-	printf("match:%d,mismatch:%d\n",match,mismatch);
+	get_class_count(data,inst,&P,&N);
+
+	accuracy = (TP+TN)/(P+N);
+	error = (FP+FN)/(P+N);
+	sensitivity = TP/P;
+	specificity = TN/N;
+	precision = TP/(TP+FP);
+	f1score = (2 * precision * sensitivity)/(precision+sensitivity);
+	fbeta0_5 = ((1+pow(0.5,2)) * precision * sensitivity) / (pow(0.5,2) * precision + sensitivity);
+	fbeta2 = ((1+pow(2,2)) * precision * sensitivity) / (pow(2,2) * precision + sensitivity);
+
+	printf("accuracy:%f\n",accuracy);
+	printf("error:%f\n",error);
+	printf("sensitivity:%f\n",sensitivity);
+	printf("specificity:%f\n",specificity);
+	printf("precision:%f\n",precision);
+	printf("f1score:%f\n",f1score);
+	printf("f beta with 0.5:%f\n",fbeta0_5);
+	printf("f beta with 2:%f\n",fbeta2);
 }
 
 int main(int argc,
