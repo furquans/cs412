@@ -11,6 +11,8 @@ typedef char bool;
 #define TRUE 1
 #define FALSE 0
 
+#define MAX_TREES 50
+
 unsigned long long attr_bitmap;
 
 struct node {
@@ -21,14 +23,14 @@ struct node {
 
 struct data {
 	char actual_label;
-	char calc_label;
+	char calc_label[MAX_TREES];
 	char *attr;
 };
 
 struct data *train_data, *test_data;
 int train_inst, test_inst;
-struct tree_node *dec_tree;
-int curr_attr;
+struct tree_node *dec_tree[MAX_TREES];
+int curr_attr,curr_tree;
 double TP,TN,FP,FN;
 struct data *curr_data;
 
@@ -386,40 +388,46 @@ void calc_gain_ratio(struct data *data,
 	free(countn_part);
 }
 
+bool single_valued_attr(struct data *data,
+			int inst,
+			int attr)
+{
+	int val;
+	int i = 0;
+
+	if (inst == 0)
+		return TRUE;
+
+	val = data[0].attr[attr];
+
+	while (i<inst) {
+		if (data[i].attr[attr] != val)
+			return FALSE;
+		i++;
+	}
+	return TRUE;
+}
+
 void attr_selection(struct data *data,
 		    int inst,
 		    int *attr)
 {
-	int i = 0;
-	double max_gain = 0, gain = 0;
+	int i;
 
 	*attr = -1;
-	printf("Attribute selection\n");
-	while (i<num_attr) {
-		if(attr_bitmap & (1ULL << i)) {
-			if (unique_values[i] == 1) {
-				attr_considered++;
-				attr_bitmap = attr_bitmap & (~(1ULL << i));
-			} else {
-				/* Sort on a particular attribute */
-				sort_on_attr(data,inst,i);
-				printf("calc gain on %d\n",i);
-				/* Calculate Gain ratio */
-				calc_gain_ratio(data,inst,i,&gain);
-				if (gain == 0) {
-					attr_considered++;
-					attr_bitmap = attr_bitmap & (~(1ULL << i));
-				} else if (gain > max_gain) {
-					max_gain = gain;
-					*attr = i;
-				}
+
+	while (attr_considered < num_attr) {
+		i = rand() % num_attr;
+		if (attr_bitmap & (1ULL << i)) {
+			attr_considered++;
+			attr_bitmap = attr_bitmap & (~(1ULL << i));
+
+			if ((unique_values[i] >= 2) &&
+			    (single_valued_attr(data,inst,i) != TRUE)) {
+				*attr = i;
+				return;
 			}
 		}
-		i++;
-	}
-	attr_considered++;
-	if (*attr != -1) {
-		attr_bitmap = attr_bitmap & (~(1ULL << (*attr)));
 	}
 }
 
@@ -479,6 +487,8 @@ struct tree_node *gen_decision_tree(struct data *data,
 	struct data *dataptr;
 	int inc = 0;
 	int i;
+	unsigned long long saved_bitmap;
+	int saved_considered;
 
 	/* Step 1: Create a node N */
 	tmp = malloc(sizeof(*tmp));
@@ -537,7 +547,11 @@ struct tree_node *gen_decision_tree(struct data *data,
 		dataptr = data + inc;
 		if (part_size[i]) {
 			printf("split:adding child\n");
+			saved_bitmap = attr_bitmap;
+			saved_considered = attr_considered;
 			add_child(node, gen_decision_tree(dataptr,part_size[i]));
+			attr_bitmap = saved_bitmap;
+			attr_considered = saved_considered;
 		} else {
 			struct node *new_tmp;
 			printf("split:adding leaf\n");
@@ -573,22 +587,7 @@ int traverse(void *data,
 	struct node *node = (struct node*)data;
 
 	if (num == 0) {
-		curr_data->calc_label = node->label;
-		printf("actual label:%d, calc_label:%d\n",curr_data->actual_label,
-		       curr_data->calc_label);
-		if (curr_data->actual_label == curr_data->calc_label) {
-			if (curr_data->actual_label == 1) {
-				TP++;
-			} else {
-				TN++;
-			}
-		} else {
-			if (curr_data->calc_label == 1) {
-				FP++;
-			} else {
-				FN++;
-			}
-		}
+		curr_data->calc_label[curr_tree] = node->label;
 		return -1;
 	}
 	for (i=0;i<num;i++) {
@@ -602,17 +601,52 @@ int traverse(void *data,
 	return i;
 }
 
+void check_final_label()
+{
+	char calc_label = -1;
+	int i;
+	int countp=0, countn=0;
+
+	for (i=0;i<MAX_TREES;i++) {
+		if (curr_data->calc_label[i] == 1)
+			countp++;
+		else
+			countn++;
+	}
+
+	if (countp > countn)
+		calc_label = 1;
+
+	if (curr_data->actual_label == calc_label) {
+		if (curr_data->actual_label == 1) {
+			TP++;
+		} else {
+			TN++;
+		}
+	} else {
+		if (calc_label == 1) {
+			FP++;
+		} else {
+			FN++;
+		}
+	}
+}
+
 void calculate_label(struct data *data,
 		     int inst)
 {
-	int i;
+	int i,j;
 	double accuracy, error, sensitivity, specificity, precision, f1score, fbeta0_5, fbeta2;
 	double P,N;
 
 	for (i=0;i<inst;i++) {
 		curr_data = data+i;
-		traverse_path(dec_tree,
-			      traverse);
+		for (j=0;j<MAX_TREES;j++) {
+			curr_tree = j;
+			traverse_path(dec_tree[j],
+				      traverse);
+		}
+		check_final_label();
 	}
 	get_class_count(data,inst,&P,&N);
 
@@ -633,6 +667,18 @@ void calculate_label(struct data *data,
 	printf("f1score:%f\n",f1score);
 	printf("f beta with 0.5:%f\n",fbeta0_5);
 	printf("f beta with 2:%f\n",fbeta2);
+}
+
+void create_random_forest()
+{
+	int i;
+
+	for (i=0;i<MAX_TREES;i++) {
+		attr_considered = 0;
+		attr_bitmap = (1ULL << num_attr) - 1;
+		srand(i*100000ULL+1);
+		dec_tree[i] = gen_decision_tree(train_data, train_inst);
+	}
 }
 
 int main(int argc,
@@ -673,7 +719,7 @@ int main(int argc,
 	get_unique_values(train_data, train_inst);
 	print_unique_array();
 
-	dec_tree = gen_decision_tree(train_data, train_inst);
+	create_random_forest();
 	calculate_label(test_data,test_inst);
 
 	free_data(train_data,train_inst);
