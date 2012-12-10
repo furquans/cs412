@@ -30,12 +30,16 @@ struct data {
 struct data *train_data, *test_data;
 int train_inst, test_inst;
 struct tree_node *dec_tree[MAX_TREES];
-int curr_attr,curr_tree;
+int curr_attr;
 double TP,TN,FP,FN;
 struct data *curr_data;
 
 char *unique_values;
 char **unique_array;
+
+FILE *trainfp, *testfp;
+int max_trees = MAX_TREES;
+int curr_tree;
 
 unsigned int calc_number_attr(char *str)
 {
@@ -51,7 +55,7 @@ unsigned int calc_number_attr(char *str)
 		start = end + 1;
 	}
 	attr_bitmap = (1ULL << (count - 1)) - 1;
-	printf("\nNumber of attributes:%d, %llx\n",count-1,attr_bitmap);
+	/* printf("\nNumber of attributes:%d, %llx\n",count-1,attr_bitmap); */
 	return (count - 1);
 }
 
@@ -288,7 +292,7 @@ void get_part_size(struct data *data,
 					inst,
 					attr,
 					unique_array[attr][i]);
-		printf("part_size:s%f\n",part_size[i]);
+		/* printf("part_size:s%f\n",part_size[i]); */
 	}
 }
 
@@ -316,7 +320,7 @@ void calc_gain_ratio(struct data *data,
 		entropy += (countn/total)*log2(countn/total);
 	}
 	entropy = (-1)*entropy;
-	printf("------------entropy:%f-------------\n",entropy);
+	/* printf("------------entropy:%f-------------\n",entropy); */
 
 	/* Find number of unique values in the attribute */
 	num_values = unique_values[attr];
@@ -344,9 +348,9 @@ void calc_gain_ratio(struct data *data,
 	for (i=0;i<num_values;i++) {
 		if (part_size[i]) {
 			double tmp=0;
-			printf("p:%f n:%f t:%f\n",countp_part[i],
-			       countn_part[i],
-			       part_size[i]);
+			/* printf("p:%f n:%f t:%f\n",countp_part[i], */
+			       /* countn_part[i], */
+			       /* part_size[i]); */
 			if (countp_part[i]) {
 				tmp += countp_part[i]/part_size[i] * log2(countp_part[i]/part_size[i]);
 			}
@@ -358,7 +362,7 @@ void calc_gain_ratio(struct data *data,
 	}
 
 	info_needed = (-1)*info_needed;
-	printf("info needed:%f\n",info_needed);
+	/* printf("info needed:%f\n",info_needed); */
 
 	/* Calculate info gain */
 	info_gain = entropy - info_needed;
@@ -370,7 +374,7 @@ void calc_gain_ratio(struct data *data,
 		}
 	}
 	split_info = (-1) * split_info;
-	printf("split_info:%f\n",split_info);
+	/* printf("split_info:%f\n",split_info); */
 
 	/* Calculate gain ratio */
 	if( info_gain ) {
@@ -378,8 +382,8 @@ void calc_gain_ratio(struct data *data,
 	} else {
 		gain_ratio = 0;
 	}
-	printf("info gain:%f\n",info_gain);
-	printf("gain ratio:%f\n",gain_ratio);
+	/* printf("info gain:%f\n",info_gain); */
+	/* printf("gain ratio:%f\n",gain_ratio); */
 
 	*attr_gain = gain_ratio;
 
@@ -408,9 +412,9 @@ bool single_valued_attr(struct data *data,
 	return TRUE;
 }
 
-void attr_selection(struct data *data,
-		    int inst,
-		    int *attr)
+void attr_selection_forest(struct data *data,
+			   int inst,
+			   int *attr)
 {
 	int i;
 
@@ -428,6 +432,43 @@ void attr_selection(struct data *data,
 				return;
 			}
 		}
+	}
+}
+
+void attr_selection_tree(struct data *data,
+			 int inst,
+			 int *attr)
+{
+	int i = 0;
+	double max_gain = 0, gain = 0;
+
+	*attr = -1;
+	/* printf("Attribute selection\n"); */
+	while (i<num_attr) {
+		if(attr_bitmap & (1ULL << i)) {
+			if (unique_values[i] == 1) {
+				attr_considered++;
+				attr_bitmap = attr_bitmap & (~(1ULL << i));
+			} else {
+				/* Sort on a particular attribute */
+				sort_on_attr(data,inst,i);
+				/* printf("calc gain on %d\n",i); */
+				/* Calculate Gain ratio */
+				calc_gain_ratio(data,inst,i,&gain);
+				if (gain == 0) {
+					attr_considered++;
+					attr_bitmap = attr_bitmap & (~(1ULL << i));
+				} else if (gain > max_gain) {
+					max_gain = gain;
+					*attr = i;
+				}
+			}
+		}
+		i++;
+	}
+	attr_considered++;
+	if (*attr != -1) {
+		attr_bitmap = attr_bitmap & (~(1ULL << (*attr)));
 	}
 }
 
@@ -477,107 +518,19 @@ void get_unique_values(struct data *data,
 	}
 }
 
-struct tree_node *gen_decision_tree(struct data *data,
-				    int inst)
-{
-	struct node *tmp;
-	struct tree_node *node;
-	int num_split;
-        double *part_size;
-	struct data *dataptr;
-	int inc = 0;
-	int i;
-	unsigned long long saved_bitmap;
-	int saved_considered;
-
-	/* Step 1: Create a node N */
-	tmp = malloc(sizeof(*tmp));
-	if (tmp == NULL) {
-		printf("Memory allocation error\n");
-		exit(1);
-	}
-
-	/* Step 2: If tuples in D are all of same class C */
-	if (data_belongs_to_same_class(data,inst)) {
-		/* Step 3: Make the node a leaf node labeled with class C
-		   and return */
-		printf("creating leaf..all same class\n");
-		tmp->label = data[0].actual_label;
-		node = create_tree_node(tmp,0);
-		return node;
-	}
-
-	/* Step 4: If attribute list is empty */
-	if (attr_considered >= num_attr) {
-		/* Step 5: Make the node a leaf node labeled with majority
-		   class in D and return */
-		printf("no attr remaining..creating leaf\n");
-		tmp->label = find_majority_class(data, inst);
-		node = create_tree_node(tmp,0);
-		return node;
-	}
-
-	/* Step 6 : Attribute selection method
-	   Step 7: Label node with split criteria */
-	attr_selection(data, inst, &tmp->attr);
-
-	if (tmp->attr == -1) {
-		printf("no attr remaining..creating leaf\n");
-                tmp->label = find_majority_class(data, inst);
-                node = create_tree_node(tmp,0);
-                return node;
-	}
-
-	num_split = unique_values[tmp->attr];
-
-	node = create_tree_node(tmp,num_split);
-
-	/* Sort the data on the selected attribute */
-	sort_on_attr(data,inst,tmp->attr);
-
-        /* Obtain the unique values of attributes */
-        /* tmp->attr_split = malloc(num_split*sizeof(*(tmp->attr_split))); */
-	tmp->attr_split = unique_array[tmp->attr];
-        part_size = malloc(num_split*sizeof(*part_size));
-	get_part_size(data,inst,tmp->attr,part_size);
-
-	printf("splitting on %d with %d splits\n",tmp->attr,num_split);
-
-	for (i=0;i<num_split;i++) {
-		dataptr = data + inc;
-		if (part_size[i]) {
-			printf("split:adding child\n");
-			saved_bitmap = attr_bitmap;
-			saved_considered = attr_considered;
-			add_child(node, gen_decision_tree(dataptr,part_size[i]));
-			attr_bitmap = saved_bitmap;
-			attr_considered = saved_considered;
-		} else {
-			struct node *new_tmp;
-			printf("split:adding leaf\n");
-			new_tmp = malloc(sizeof(*new_tmp));
-			new_tmp->label = find_majority_class(data, inst);
-			add_child(node, create_tree_node(new_tmp,0));
-		}
-		inc += part_size[i];
-	}
-
-	return node;
-}
-
 void print_unique_array()
 {
-	int i = 0,j;
+	/* int i = 0,j; */
 
-	while (i<num_attr) {
-		printf("Attr :%d - ",i);
+	/* while (i<num_attr) { */
+	/* 	printf("Attr :%d - ",i); */
 
-		for (j=0;j<unique_values[i];j++) {
-			printf(" %d ",unique_array[i][j]);
-		}
-		i++;
-		printf("\n");
-	}
+	/* 	for (j=0;j<unique_values[i];j++) { */
+	/* 		printf(" %d ",unique_array[i][j]); */
+	/* 	} */
+	/* 	i++; */
+	/* 	printf("\n"); */
+	/* } */
 }
 
 int traverse(void *data,
@@ -607,7 +560,7 @@ void check_final_label()
 	int i;
 	int countp=0, countn=0;
 
-	for (i=0;i<MAX_TREES;i++) {
+	for (i=0;i<max_trees;i++) {
 		if (curr_data->calc_label[i] == 1)
 			countp++;
 		else
@@ -632,16 +585,17 @@ void check_final_label()
 	}
 }
 
-void calculate_label(struct data *data,
-		     int inst)
+void calculate_label()
 {
 	int i,j;
 	double accuracy, error, sensitivity, specificity, precision, f1score, fbeta0_5, fbeta2;
 	double P,N;
+	struct data *data = test_data;
+	int inst = test_inst;
 
 	for (i=0;i<inst;i++) {
 		curr_data = data+i;
-		for (j=0;j<MAX_TREES;j++) {
+		for (j=0;j<max_trees;j++) {
 			curr_tree = j;
 			traverse_path(dec_tree[j],
 				      traverse);
@@ -659,46 +613,28 @@ void calculate_label(struct data *data,
 	fbeta0_5 = ((1+pow(0.5,2)) * precision * sensitivity) / (pow(0.5,2) * precision + sensitivity);
 	fbeta2 = ((1+pow(2,2)) * precision * sensitivity) / (pow(2,2) * precision + sensitivity);
 
-	printf("accuracy:%f\n",accuracy);
-	printf("error:%f\n",error);
-	printf("sensitivity:%f\n",sensitivity);
-	printf("specificity:%f\n",specificity);
-	printf("precision:%f\n",precision);
-	printf("f1score:%f\n",f1score);
-	printf("f beta with 0.5:%f\n",fbeta0_5);
-	printf("f beta with 2:%f\n",fbeta2);
+	printf("%f\n%f\n%f\n%f\n",TP,FN,FP,TN);
+
+	/* printf("accuracy:%f\n",accuracy); */
+	/* printf("error:%f\n",error); */
+	/* printf("sensitivity:%f\n",sensitivity); */
+	/* printf("specificity:%f\n",specificity); */
+	/* printf("precision:%f\n",precision); */
+	/* printf("f1score:%f\n",f1score); */
+	/* printf("f beta with 0.5:%f\n",fbeta0_5); */
+	/* printf("f beta with 2:%f\n",fbeta2); */
 }
 
-void create_random_forest()
+void pre_processing(char *trainfile,
+		    char *testfile)
 {
-	int i;
-
-	for (i=0;i<MAX_TREES;i++) {
-		attr_considered = 0;
-		attr_bitmap = (1ULL << num_attr) - 1;
-		srand(i*100000ULL+1);
-		dec_tree[i] = gen_decision_tree(train_data, train_inst);
-	}
-}
-
-int main(int argc,
-	 char **argv)
-{
-	FILE *trainfp, *testfp;
-	int i;
-
-	if (argc != 3) {
-		printf("Usage:%s train_file test_file\n",argv[0]);
-		exit(1);
-	}
-
-	trainfp = fopen(argv[1], "r");
+	trainfp = fopen(trainfile, "r");
 	if (trainfp == NULL) {
 		printf("File opening error\n");
 		exit(1);
 	}
 
-	testfp = fopen(argv[2], "r");
+	testfp = fopen(testfile,"r");
 	if (testfp == NULL) {
 		printf("File 2 opening error\n");
 		exit(1);
@@ -710,17 +646,123 @@ int main(int argc,
 	/* print_data(train_data, train_inst); */
 	/* print_data(test_data, test_inst); */
 
-	printf("%s Number of train instances:%d\n",__func__,train_inst);
-	printf("Number of test instances:%d\n",test_inst);
+	/* printf("Number of train instances:%d\n",train_inst); */
+	/* printf("Number of test instances:%d\n",test_inst); */
 
 	unique_values = malloc(num_attr*sizeof(*unique_values));
 	unique_array = malloc(num_attr*sizeof(*unique_array));
 
 	get_unique_values(train_data, train_inst);
 	print_unique_array();
+}
 
-	create_random_forest();
-	calculate_label(test_data,test_inst);
+struct tree_node *gen_decision_tree(struct data *data,
+				    int inst)
+{
+	struct node *tmp;
+	struct tree_node *node;
+	int num_split;
+        double *part_size;
+	struct data *dataptr;
+	int inc = 0;
+	int i;
+	unsigned long long saved_bitmap;
+	int saved_considered;
+
+	/* Step 1: Create a node N */
+	tmp = malloc(sizeof(*tmp));
+	if (tmp == NULL) {
+		printf("Memory allocation error\n");
+		exit(1);
+	}
+
+	/* Step 2: If tuples in D are all of same class C */
+	if (data_belongs_to_same_class(data,inst)) {
+		/* Step 3: Make the node a leaf node labeled with class C
+		   and return */
+		/* printf("creating leaf..all same class\n"); */
+		tmp->label = data[0].actual_label;
+		node = create_tree_node(tmp,0);
+		return node;
+	}
+
+	/* Step 4: If attribute list is empty */
+	if (attr_considered >= num_attr) {
+		/* Step 5: Make the node a leaf node labeled with majority
+		   class in D and return */
+		/* printf("no attr remaining..creating leaf\n"); */
+		tmp->label = find_majority_class(data, inst);
+		node = create_tree_node(tmp,0);
+		return node;
+	}
+
+	/* Step 6 : Attribute selection method
+	   Step 7: Label node with split criteria */
+	if (max_trees == 1) {
+		attr_selection_tree(data, inst, &tmp->attr);
+	} else {
+		attr_selection_forest(data, inst, &tmp->attr);
+	}
+
+	if (tmp->attr == -1) {
+		/* printf("no attr remaining..creating leaf\n"); */
+                tmp->label = find_majority_class(data, inst);
+                node = create_tree_node(tmp,0);
+                return node;
+	}
+
+	num_split = unique_values[tmp->attr];
+
+	node = create_tree_node(tmp,num_split);
+
+	/* Sort the data on the selected attribute */
+	sort_on_attr(data,inst,tmp->attr);
+
+        /* Obtain the unique values of attributes */
+	tmp->attr_split = unique_array[tmp->attr];
+        part_size = malloc(num_split*sizeof(*part_size));
+	get_part_size(data,inst,tmp->attr,part_size);
+
+	/* printf("splitting on %d with %d splits\n",tmp->attr,num_split); */
+
+	for (i=0;i<num_split;i++) {
+		dataptr = data + inc;
+		if (part_size[i]) {
+			/* printf("split:adding child\n"); */
+			saved_bitmap = attr_bitmap;
+			saved_considered = attr_considered;
+			add_child(node, gen_decision_tree(dataptr,part_size[i]));
+			attr_bitmap = saved_bitmap;
+			attr_considered = saved_considered;
+		} else {
+			struct node *new_tmp;
+			/* printf("split:adding leaf\n"); */
+			new_tmp = malloc(sizeof(*new_tmp));
+			new_tmp->label = find_majority_class(data, inst);
+			add_child(node, create_tree_node(new_tmp,0));
+		}
+		inc += part_size[i];
+	}
+
+	return node;
+}
+
+void create_trees(int n)
+{
+	int i;
+
+	max_trees = n;
+	for (i=0;i<n;i++) {
+		attr_considered = 0;
+		attr_bitmap = (1ULL << num_attr) - 1;
+		srand(i*100000ULL+1);
+		dec_tree[i] = gen_decision_tree(train_data, train_inst);
+	}
+}
+
+void post_processing()
+{
+	int i;
 
 	free_data(train_data,train_inst);
 	free_data(test_data,test_inst);
@@ -732,5 +774,5 @@ int main(int argc,
 		
 	fclose(trainfp);
 	fclose(testfp);
-	return(0);
+
 }

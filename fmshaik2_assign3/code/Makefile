@@ -2,16 +2,19 @@ CC = gcc
 FLAGS = -g -W -Wall
 LIBS = -lm
 
-all: input randomforest
+all: decision_tree random_forest
 
-randomforest: randomforest.c tree.o
+decision_tree: decision_tree.c common.o tree.o common.h tree.h
 	@(echo "compiling $< ...")
 	@($(CC) $(FLAGS) $^ -o $@ $(LIBS))
 
-
-input: input.c tree.o
+random_forest: random_forest.c common.o tree.o common.h tree.h
 	@(echo "compiling $< ...")
 	@($(CC) $(FLAGS) $^ -o $@ $(LIBS))
+
+common.o: common.c
+	@(echo "compiling $< ...")
+	@($(CC) -c $(FLAGS) $^ -o $@ $(LIBS))
 
 tree.o: tree.c
 	@(echo "compiling $< ...")
@@ -19,5 +22,5 @@ tree.o: tree.c
 
 .PHONY : clean
 clean:
-	rm -f *.o input randomforest
+	rm -f *.o decision_tree random_forest
 
